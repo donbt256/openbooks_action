@@ -100,7 +100,7 @@ jobs:
           tail -n 80 /tmp/ngrok.log || true
           exit 1
 
-      - name: Diagnose IRC connectivity and stream OpenBooks logs
+      - name: Diagnose IRC connectivity and stream logs
         run: |
           set +e
           echo "=== DNS lookup for IRC server ==="
@@ -108,11 +108,7 @@ jobs:
 
           echo
           echo "=== TCP/TLS connectivity test to irc.irchighway.net:6697 ==="
-          if command -v timeout >/dev/null 2>&1; then
-            timeout 15 openssl s_client -connect irc.irchighway.net:6697 -servername irc.irchighway.net -brief </dev/null 2>&1 || true
-          else
-            openssl s_client -connect irc.irchighway.net:6697 -servername irc.irchighway.net -brief </dev/null 2>&1 || true
-          fi
+          timeout 15 openssl s_client -connect irc.irchighway.net:6697 -servername irc.irchighway.net -brief </dev/null 2>&1 || true
 
           echo
           echo "=== Initial OpenBooks container logs ==="
@@ -120,36 +116,22 @@ jobs:
 
           echo
           echo "=== Streaming OpenBooks container logs ==="
-          echo "Keep this workflow step open while reproducing the failure in the iframe."
+          echo "Reproduce the download failure in the iframe while this step is running."
           docker logs --follow --since=1m openbooks 2>&1 &
           LOG_PID=$!
 
           echo
-          echo "=== Watching ngrok HTTP request status (query strings and headers are omitted) ==="
+          echo "=== Periodically checking recent ngrok request status codes ==="
+          echo "Paths are shown without query strings; request headers and bodies are not logged."
           (
-            declare -A SEEN=()
             while true; do
               REQUESTS="$(curl --fail --silent --connect-timeout 1 --max-time 3 http://127.0.0.1:4040/api/requests/http 2>/dev/null || true)"
               if [ -n "$REQUESTS" ]; then
-                while IFS=
-      - name: Show logs on failure
-        if: failure()
-        run: |
-          docker logs openbooks 2>/dev/null || true
-          tail -n 100 /tmp/ngrok.log 2>/dev/null || true
-
-      - name: Stop OpenBooks
-        if: always()
-        run: docker stop openbooks 2>/dev/null || true
-\t' read -r ID METHOD PATH STATUS; do
-                  [ -n "$ID" ] || continue
-                  if [ -z "${SEEN[$ID]+x}" ]; then
-                    SEEN["$ID"]=1
-                    printf 'NGROK_REQUEST method=%s path=%s status=%s\n' "$METHOD" "$PATH" "$STATUS"
-                  fi
-                done < <(printf '%s' "$REQUESTS" | jq -r '.requests[]? | [.id, .request.method, (.request.uri | split("?")[0]), (.response.status_code // "pending")] | @tsv' 2>/dev/null)
+                printf '%s' "$REQUESTS" | jq -r '.requests[-10:][]? | "NGROK_REQUEST method=\(.request.method) path=\(.request.uri | split("?")[0]) status=\(.response.status_code // "pending")"' 2>/dev/null || true
+              else
+                echo "ngrok request API not available yet"
               fi
-              sleep 5
+              sleep 15
             done
           ) &
           REQUEST_LOG_PID=$!
