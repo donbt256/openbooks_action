@@ -17,10 +17,10 @@ jobs:
     steps:
       - name: Check required secrets
         env:
-          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+          TUNNELTO_TOKEN: ${{ secrets.TUNNELTO_TOKEN }}
         run: |
           set -euo pipefail
-          test -n "$NGROK_AUTHTOKEN" || { echo "::error::Add NGROK_AUTHTOKEN in repository Actions secrets."; exit 1; }
+          test -n "$TUNNELTO_TOKEN" || { echo "::error::Add TUNNELTO_TOKEN in repository Actions secrets."; exit 1; }
 
       - name: Generate random IRC username
         id: identity
@@ -42,62 +42,58 @@ jobs:
             evanbuss/openbooks:latest \
             --name "$IRC_NICK"
 
-      - name: Install and start ngrok
+      - name: Install and start tunnelto
         env:
-          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+          TUNNELTO_TOKEN: ${{ secrets.TUNNELTO_TOKEN }}
           IRC_NICK: ${{ steps.identity.outputs.irc_nick }}
         run: |
           set -euo pipefail
-          echo "Downloading ngrok..."
+          echo "Installing tunnelto..."
           curl --fail --silent --show-error --location --connect-timeout 10 --max-time 60 \
-            https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz \
-            --output /tmp/ngrok.tgz
-          tar -xzf /tmp/ngrok.tgz -C /tmp
+            https://app.tunnelto.me/install.sh | sh
+          export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:$PATH"
+          command -v tunnelto >/dev/null || { echo "::error::tunnelto installer completed but the CLI was not found on PATH."; exit 1; }
 
-          echo "Configuring ngrok authentication..."
-          /tmp/ngrok config add-authtoken "$NGROK_AUTHTOKEN"
+          echo "Starting tunnel for https://books.claired.net -> localhost:8080"
+          echo "The tunnelto dashboard must have books.claired.net configured as a custom domain."
+          nohup tunnelto add books.claired.net 8080 </dev/null >/tmp/tunnelto.log 2>&1 &
+          echo $! > /tmp/tunnelto.pid
 
-          echo "Starting ngrok tunnel without HTTP Basic Authentication..."
-          nohup /tmp/ngrok http 8080 --log=stdout </dev/null >/tmp/ngrok.log 2>&1 &
-          echo $! > /tmp/ngrok.pid
-
-          for attempt in $(seq 1 30); do
-            API_JSON="$(curl --fail --silent --connect-timeout 1 --max-time 2 \
-              http://127.0.0.1:4040/api/tunnels 2>/dev/null || true)"
-            URL="$(printf "%s" "$API_JSON" | jq -r '.tunnels[]? | select(.proto == "https") | .public_url' 2>/dev/null | head -n 1 || true)"
-
-            if [ -n "$URL" ] && [ "$URL" != "null" ]; then
+          for attempt in $(seq 1 60); do
+            if curl --silent --show-error --connect-timeout 2 --max-time 4 \
+              --output /dev/null https://books.claired.net/ 2>/dev/null; then
               {
                 echo "## OpenBooks is running"
                 echo
-                echo "**URL:** $URL"
+                echo "**URL:** https://books.claired.net"
                 echo
                 echo "**IRC username:** $IRC_NICK"
                 echo
-                echo "**No webpage password is configured. Anyone who has this URL can access the temporary instance while this workflow runs.**"
+                echo "**No webpage password is configured. Anyone who knows this URL can access the temporary instance while this workflow runs.**"
                 echo
-                echo "Keep this workflow running while using OpenBooks. Downloaded files are sent to your browser; they are not retained by this workflow."
+                echo "Keep this workflow running while using OpenBooks. The free tunnel has a one-hour lifetime; the workflow will attempt to recreate it when the tunnel command exits."
               } >> "$GITHUB_STEP_SUMMARY"
-              echo "OpenBooks URL: $URL"
+              echo "OpenBooks URL: https://books.claired.net"
               echo "IRC username: $IRC_NICK"
               exit 0
             fi
 
-            if ! kill -0 "$(cat /tmp/ngrok.pid)" 2>/dev/null; then
-              echo "::error::ngrok exited before creating an HTTPS tunnel."
-              tail -n 80 /tmp/ngrok.log || true
+            if ! kill -0 "$(cat /tmp/tunnelto.pid)" 2>/dev/null; then
+              echo "::error::tunnelto exited before books.claired.net became reachable."
+              tail -n 100 /tmp/tunnelto.log || true
               exit 1
             fi
 
-            if [ $((attempt % 5)) -eq 0 ]; then
-              echo "Still waiting for ngrok HTTPS URL (attempt $attempt/30)..."
-              tail -n 10 /tmp/ngrok.log || true
+            if [ $((attempt % 10)) -eq 0 ]; then
+              echo "Waiting for custom domain and HTTPS certificate (attempt $attempt/60)..."
+              tail -n 10 /tmp/tunnelto.log || true
             fi
             sleep 2
           done
 
-          echo "::error::ngrok did not provide an HTTPS URL within the startup window. Recent ngrok log:"
-          tail -n 80 /tmp/ngrok.log || true
+          echo "::error::books.claired.net did not become reachable within 120 seconds."
+          echo "Check the custom-domain and DNS setup in the tunnelto dashboard."
+          tail -n 100 /tmp/tunnelto.log || true
           exit 1
 
       - name: Diagnose IRC connectivity and stream logs
@@ -116,32 +112,21 @@ jobs:
 
           echo
           echo "=== Streaming OpenBooks container logs ==="
-          echo "Reproduce the download failure in the iframe while this step is running."
           docker logs --follow --since=1m openbooks 2>&1 &
           LOG_PID=$!
-
-          echo
-          echo "=== Periodically checking recent ngrok request status codes ==="
-          echo "Paths are shown without query strings; request headers and bodies are not logged."
-          (
-            while true; do
-              REQUESTS="$(curl --fail --silent --connect-timeout 1 --max-time 3 http://127.0.0.1:4040/api/requests/http 2>/dev/null || true)"
-              if [ -n "$REQUESTS" ]; then
-                printf '%s' "$REQUESTS" | jq -r '.requests[-10:][]? | "NGROK_REQUEST method=\(.request.method) path=\(.request.uri | split("?")[0]) status=\(.response.status_code // "pending")"' 2>/dev/null || true
-              else
-                echo "ngrok request API not available yet"
-              fi
-              sleep 15
-            done
-          ) &
-          REQUEST_LOG_PID=$!
-          trap 'kill "$LOG_PID" "$REQUEST_LOG_PID" 2>/dev/null || true' EXIT
+          trap 'kill "$LOG_PID" 2>/dev/null || true' EXIT
 
           while true; do
             if ! docker inspect -f '{{.State.Running}}' openbooks 2>/dev/null | grep -q true; then
               echo "::error::OpenBooks container stopped unexpectedly."
               docker logs --tail 200 openbooks 2>&1 || true
               exit 1
+            fi
+            if ! kill -0 "$(cat /tmp/tunnelto.pid)" 2>/dev/null; then
+              echo "tunnelto process exited; attempting to recreate the free one-hour tunnel."
+              export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:$PATH"
+              nohup tunnelto add books.claired.net 8080 </dev/null >>/tmp/tunnelto.log 2>&1 &
+              echo $! > /tmp/tunnelto.pid
             fi
             sleep 30
           done
@@ -150,7 +135,7 @@ jobs:
         if: failure()
         run: |
           docker logs openbooks 2>/dev/null || true
-          tail -n 100 /tmp/ngrok.log 2>/dev/null || true
+          tail -n 100 /tmp/tunnelto.log 2>/dev/null || true
 
       - name: Stop OpenBooks
         if: always()
