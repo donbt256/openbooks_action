@@ -1,0 +1,94 @@
+name: OpenBooks (temporary)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: openbooks-session
+  cancel-in-progress: true
+
+jobs:
+  openbooks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Check required secrets
+        env:
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+          OPENBOOKS_PASSWORD: ${{ secrets.OPENBOOKS_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$NGROK_AUTHTOKEN" || { echo "::error::Add NGROK_AUTHTOKEN in repository Actions secrets."; exit 1; }
+          test -n "$OPENBOOKS_PASSWORD" || { echo "::error::Add OPENBOOKS_PASSWORD in repository Actions secrets."; exit 1; }
+
+      - name: Start OpenBooks
+        run: |
+          set -euo pipefail
+          docker pull evanbuss/openbooks:latest
+          docker run -d --rm \
+            --name openbooks \
+            -p 127.0.0.1:8080:80 \
+            evanbuss/openbooks:latest \
+            --name githubactions
+
+      - name: Install and start ngrok
+        env:
+          NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+          OPENBOOKS_PASSWORD: ${{ secrets.OPENBOOKS_PASSWORD }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz \
+            --output /tmp/ngrok.tgz
+          tar -xzf /tmp/ngrok.tgz -C /tmp
+          /tmp/ngrok config add-authtoken "$NGROK_AUTHTOKEN"
+          /tmp/ngrok http 8080 --log=stdout --basic-auth="openbooks:$OPENBOOKS_PASSWORD" \
+            > /tmp/ngrok.log 2>&1 &
+          echo $! > /tmp/ngrok.pid
+
+          for attempt in $(seq 1 60); do
+            URL="$(curl --fail --silent http://127.0.0.1:4040/api/tunnels | jq -r '.tunnels[] | select(.proto == "https") | .public_url' | head -n 1)"
+            if [ -n "$URL" ] && [ "$URL" != "null" ]; then
+              {
+                echo "## OpenBooks is running"
+                echo
+                echo "**URL:** $URL"
+                echo
+                echo "Authenticate with username `openbooks` and the password stored in the repository secret `OPENBOOKS_PASSWORD`."
+                echo
+                echo "Keep this workflow running while using OpenBooks. Downloaded files are sent to your browser; they are not retained by this workflow."
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "OpenBooks URL: $URL"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "::error::ngrok did not provide an HTTPS URL. Recent ngrok log:"
+          tail -n 80 /tmp/ngrok.log
+          exit 1
+
+      - name: Keep the temporary instance alive
+        run: |
+          echo "OpenBooks will remain available until this workflow is cancelled or reaches its time limit."
+          while true; do
+            if ! docker inspect -f '{{.State.Running}}' openbooks 2>/dev/null | grep -q true; then
+              echo "::error::OpenBooks container stopped unexpectedly."
+              docker logs openbooks || true
+              exit 1
+            fi
+            sleep 30
+          done
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          docker logs openbooks 2>/dev/null || true
+          tail -n 100 /tmp/ngrok.log 2>/dev/null || true
+
+      - name: Stop OpenBooks
+        if: always()
+        run: docker stop openbooks 2>/dev/null || true
