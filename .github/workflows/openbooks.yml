@@ -22,7 +22,17 @@ jobs:
           set -euo pipefail
           test -n "$NGROK_AUTHTOKEN" || { echo "::error::Add NGROK_AUTHTOKEN in repository Actions secrets."; exit 1; }
 
+      - name: Generate random IRC username
+        id: identity
+        run: |
+          set -euo pipefail
+          IRC_NICK="openbooks-$(openssl rand -hex 4)"
+          echo "irc_nick=$IRC_NICK" >> "$GITHUB_OUTPUT"
+          echo "Generated IRC username: $IRC_NICK"
+
       - name: Start OpenBooks
+        env:
+          IRC_NICK: ${{ steps.identity.outputs.irc_nick }}
         run: |
           set -euo pipefail
           docker pull evanbuss/openbooks:latest
@@ -30,11 +40,12 @@ jobs:
             --name openbooks \
             -p 127.0.0.1:8080:80 \
             evanbuss/openbooks:latest \
-            --name githubactions
+            --name "$IRC_NICK"
 
       - name: Install and start ngrok
         env:
           NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
+          IRC_NICK: ${{ steps.identity.outputs.irc_nick }}
         run: |
           set -euo pipefail
           echo "Downloading ngrok..."
@@ -61,11 +72,14 @@ jobs:
                 echo
                 echo "**URL:** $URL"
                 echo
+                echo "**IRC username:** $IRC_NICK"
+                echo
                 echo "**No webpage password is configured. Anyone who has this URL can access the temporary instance while this workflow runs.**"
                 echo
                 echo "Keep this workflow running while using OpenBooks. Downloaded files are sent to your browser; they are not retained by this workflow."
               } >> "$GITHUB_STEP_SUMMARY"
               echo "OpenBooks URL: $URL"
+              echo "IRC username: $IRC_NICK"
               exit 0
             fi
 
