@@ -123,7 +123,37 @@ jobs:
           echo "Keep this workflow step open while reproducing the failure in the iframe."
           docker logs --follow --since=1m openbooks 2>&1 &
           LOG_PID=$!
-          trap 'kill "$LOG_PID" 2>/dev/null || true' EXIT
+
+          echo
+          echo "=== Watching ngrok HTTP request status (query strings and headers are omitted) ==="
+          (
+            declare -A SEEN=()
+            while true; do
+              REQUESTS="$(curl --fail --silent --connect-timeout 1 --max-time 3 http://127.0.0.1:4040/api/requests/http 2>/dev/null || true)"
+              if [ -n "$REQUESTS" ]; then
+                while IFS=
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          docker logs openbooks 2>/dev/null || true
+          tail -n 100 /tmp/ngrok.log 2>/dev/null || true
+
+      - name: Stop OpenBooks
+        if: always()
+        run: docker stop openbooks 2>/dev/null || true
+\t' read -r ID METHOD PATH STATUS; do
+                  [ -n "$ID" ] || continue
+                  if [ -z "${SEEN[$ID]+x}" ]; then
+                    SEEN["$ID"]=1
+                    printf 'NGROK_REQUEST method=%s path=%s status=%s\n' "$METHOD" "$PATH" "$STATUS"
+                  fi
+                done < <(printf '%s' "$REQUESTS" | jq -r '.requests[]? | [.id, .request.method, (.request.uri | split("?")[0]), (.response.status_code // "pending")] | @tsv' 2>/dev/null)
+              fi
+              sleep 5
+            done
+          ) &
+          REQUEST_LOG_PID=$!
+          trap 'kill "$LOG_PID" "$REQUEST_LOG_PID" 2>/dev/null || true' EXIT
 
           while true; do
             if ! docker inspect -f '{{.State.Running}}' openbooks 2>/dev/null | grep -q true; then
