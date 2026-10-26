@@ -18,11 +18,9 @@ jobs:
       - name: Check required secrets
         env:
           NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
-          OPENBOOKS_PASSWORD: ${{ secrets.OPENBOOKS_PASSWORD }}
         run: |
           set -euo pipefail
           test -n "$NGROK_AUTHTOKEN" || { echo "::error::Add NGROK_AUTHTOKEN in repository Actions secrets."; exit 1; }
-          test -n "$OPENBOOKS_PASSWORD" || { echo "::error::Add OPENBOOKS_PASSWORD in repository Actions secrets."; exit 1; }
 
       - name: Start OpenBooks
         run: |
@@ -37,7 +35,6 @@ jobs:
       - name: Install and start ngrok
         env:
           NGROK_AUTHTOKEN: ${{ secrets.NGROK_AUTHTOKEN }}
-          OPENBOOKS_PASSWORD: ${{ secrets.OPENBOOKS_PASSWORD }}
         run: |
           set -euo pipefail
           echo "Downloading ngrok..."
@@ -49,9 +46,8 @@ jobs:
           echo "Configuring ngrok authentication..."
           /tmp/ngrok config add-authtoken "$NGROK_AUTHTOKEN"
 
-          echo "Starting ngrok tunnel..."
-          nohup /tmp/ngrok http 8080 --log=stdout --basic-auth="openbooks:$OPENBOOKS_PASSWORD" \
-            </dev/null >/tmp/ngrok.log 2>&1 &
+          echo "Starting ngrok tunnel without HTTP Basic Authentication..."
+          nohup /tmp/ngrok http 8080 --log=stdout </dev/null >/tmp/ngrok.log 2>&1 &
           echo $! > /tmp/ngrok.pid
 
           for attempt in $(seq 1 30); do
@@ -65,7 +61,7 @@ jobs:
                 echo
                 echo "**URL:** $URL"
                 echo
-                echo "Authenticate with username `openbooks` and the password stored in the repository secret `OPENBOOKS_PASSWORD`."
+                echo "**No webpage password is configured. Anyone who has this URL can access the temporary instance while this workflow runs.**"
                 echo
                 echo "Keep this workflow running while using OpenBooks. Downloaded files are sent to your browser; they are not retained by this workflow."
               } >> "$GITHUB_STEP_SUMMARY"
