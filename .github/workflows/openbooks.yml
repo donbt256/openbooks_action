@@ -40,18 +40,25 @@ jobs:
           OPENBOOKS_PASSWORD: ${{ secrets.OPENBOOKS_PASSWORD }}
         run: |
           set -euo pipefail
-          curl --fail --silent --show-error --location \
+          echo "Downloading ngrok..."
+          curl --fail --silent --show-error --location --connect-timeout 10 --max-time 60 \
             https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz \
             --output /tmp/ngrok.tgz
           tar -xzf /tmp/ngrok.tgz -C /tmp
+
+          echo "Configuring ngrok authentication..."
           /tmp/ngrok config add-authtoken "$NGROK_AUTHTOKEN"
-          /tmp/ngrok http 8080 --log=stdout --basic-auth="openbooks:$OPENBOOKS_PASSWORD" \
-            > /tmp/ngrok.log 2>&1 &
+
+          echo "Starting ngrok tunnel..."
+          nohup /tmp/ngrok http 8080 --log=stdout --basic-auth="openbooks:$OPENBOOKS_PASSWORD" \
+            </dev/null >/tmp/ngrok.log 2>&1 &
           echo $! > /tmp/ngrok.pid
 
-          for attempt in $(seq 1 60); do
-            API_JSON="$(curl --fail --silent http://127.0.0.1:4040/api/tunnels 2>/dev/null || true)"
+          for attempt in $(seq 1 30); do
+            API_JSON="$(curl --fail --silent --connect-timeout 1 --max-time 2 \
+              http://127.0.0.1:4040/api/tunnels 2>/dev/null || true)"
             URL="$(printf "%s" "$API_JSON" | jq -r '.tunnels[]? | select(.proto == "https") | .public_url' 2>/dev/null | head -n 1 || true)"
+
             if [ -n "$URL" ] && [ "$URL" != "null" ]; then
               {
                 echo "## OpenBooks is running"
@@ -65,11 +72,22 @@ jobs:
               echo "OpenBooks URL: $URL"
               exit 0
             fi
+
+            if ! kill -0 "$(cat /tmp/ngrok.pid)" 2>/dev/null; then
+              echo "::error::ngrok exited before creating an HTTPS tunnel."
+              tail -n 80 /tmp/ngrok.log || true
+              exit 1
+            fi
+
+            if [ $((attempt % 5)) -eq 0 ]; then
+              echo "Still waiting for ngrok HTTPS URL (attempt $attempt/30)..."
+              tail -n 10 /tmp/ngrok.log || true
+            fi
             sleep 2
           done
 
-          echo "::error::ngrok did not provide an HTTPS URL. Recent ngrok log:"
-          tail -n 80 /tmp/ngrok.log
+          echo "::error::ngrok did not provide an HTTPS URL within the startup window. Recent ngrok log:"
+          tail -n 80 /tmp/ngrok.log || true
           exit 1
 
       - name: Keep the temporary instance alive
