@@ -50,7 +50,7 @@ jobs:
           set -euo pipefail
           echo "Installing tunnelto..."
           curl --fail --silent --show-error --location --connect-timeout 10 --max-time 60 \
-            https://app.tunnelto.me/install.sh | sh
+            https://app.tunnelto.me/install.sh | sh -s -- -t "$TUNNELTO_TOKEN"
           export PATH="$HOME/.local/bin:$HOME/.cargo/bin:/usr/local/bin:$PATH"
           command -v tunnelto >/dev/null || { echo "::error::tunnelto installer completed but the CLI was not found on PATH."; exit 1; }
 
