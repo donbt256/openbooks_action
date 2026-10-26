@@ -50,7 +50,8 @@ jobs:
           echo $! > /tmp/ngrok.pid
 
           for attempt in $(seq 1 60); do
-            URL="$(curl --fail --silent http://127.0.0.1:4040/api/tunnels | jq -r '.tunnels[] | select(.proto == "https") | .public_url' | head -n 1)"
+            API_JSON="$(curl --fail --silent http://127.0.0.1:4040/api/tunnels 2>/dev/null || true)"
+            URL="$(printf "%s" "$API_JSON" | jq -r '.tunnels[]? | select(.proto == "https") | .public_url' 2>/dev/null | head -n 1 || true)"
             if [ -n "$URL" ] && [ "$URL" != "null" ]; then
               {
                 echo "## OpenBooks is running"
