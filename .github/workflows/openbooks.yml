@@ -100,13 +100,35 @@ jobs:
           tail -n 80 /tmp/ngrok.log || true
           exit 1
 
-      - name: Keep the temporary instance alive
+      - name: Diagnose IRC connectivity and stream OpenBooks logs
         run: |
-          echo "OpenBooks will remain available until this workflow is cancelled or reaches its time limit."
+          set +e
+          echo "=== DNS lookup for IRC server ==="
+          getent ahosts irc.irchighway.net || true
+
+          echo
+          echo "=== TCP/TLS connectivity test to irc.irchighway.net:6697 ==="
+          if command -v timeout >/dev/null 2>&1; then
+            timeout 15 openssl s_client -connect irc.irchighway.net:6697 -servername irc.irchighway.net -brief </dev/null 2>&1 || true
+          else
+            openssl s_client -connect irc.irchighway.net:6697 -servername irc.irchighway.net -brief </dev/null 2>&1 || true
+          fi
+
+          echo
+          echo "=== Initial OpenBooks container logs ==="
+          docker logs --tail 100 openbooks 2>&1 || true
+
+          echo
+          echo "=== Streaming OpenBooks container logs ==="
+          echo "Keep this workflow step open while reproducing the failure in the iframe."
+          docker logs --follow --since=1m openbooks 2>&1 &
+          LOG_PID=$!
+          trap 'kill "$LOG_PID" 2>/dev/null || true' EXIT
+
           while true; do
             if ! docker inspect -f '{{.State.Running}}' openbooks 2>/dev/null | grep -q true; then
               echo "::error::OpenBooks container stopped unexpectedly."
-              docker logs openbooks || true
+              docker logs --tail 200 openbooks 2>&1 || true
               exit 1
             fi
             sleep 30
